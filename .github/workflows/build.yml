@@ -69,7 +69,7 @@ jobs:
           name: openwrt-firmware-${{ github.sha }}
           path: openwrt/bin/targets/
           retention-days: 7
-          - name: 生成发布标签
+      - name: 生成发布标签
         id: tag
         run: echo "tag=v$(date +'%Y.%m.%d-%H%M')" >> $GITHUB_OUTPUT
 
