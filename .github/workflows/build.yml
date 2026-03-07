@@ -69,3 +69,28 @@ jobs:
           name: openwrt-firmware-${{ github.sha }}
           path: openwrt/bin/targets/
           retention-days: 7
+          - name: 生成发布标签
+        id: tag
+        run: echo "tag=v$(date +'%Y.%m.%d-%H%M')" >> $GITHUB_OUTPUT
+
+      - name: 创建 Release 并上传固件
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: "ImmortalWrt NanoPi R1S H5 ${{ steps.tag.outputs.tag }}"
+          body: |
+            ## NanoPi R1S H5 固件
+
+            **编译时间：** ${{ steps.tag.outputs.tag }}
+            **固件来源：** ImmortalWrt (master)
+            **目标设备：** NanoPi R1S H5 (全志 H5 / Cortex-A53)
+
+            ### 刷机说明
+            - 推荐使用 `ext4-sdcard.img.gz`，用 balenaEtcher 写入 SD 卡
+            - 默认管理地址：`192.168.1.1`
+            - 默认用户名/密码：`root` / `password`
+
+            ### 内置软件
+            htop · curl · wget · nano · ethtool · kmod-zram · kmod-tcp-bbr · kmod-sched-cake
+          files: openwrt/bin/targets/sunxi/cortexa53/*
+          token: ${{ secrets.GITHUB_TOKEN }}
