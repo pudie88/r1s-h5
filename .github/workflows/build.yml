@@ -32,7 +32,7 @@ jobs:
             rsync unzip zlib1g-dev file wget mold
           pip3 install pyelftools --break-system-packages
 
-     - name: 克隆 OpenWrt 源码
+      - name: 克隆 OpenWrt 源码
         run: |
           rm -rf openwrt
           git clone --depth=1 https://github.com/immortalwrt/immortalwrt.git openwrt
