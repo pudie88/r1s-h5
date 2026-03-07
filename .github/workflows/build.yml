@@ -1,7 +1,3 @@
-# GitHub Actions 缓存策略修正
-# 原方案问题: key 使用 github.sha，每次 commit 必定 miss 缓存，导致每次都全量重编
-# 修正: 用 feeds.conf.default 和 .config 的哈希作为 key，只有配置变动才重新编译
-
 name: Build OpenWrt
 
 on:
@@ -18,15 +14,12 @@ jobs:
 
       - name: 恢复编译缓存
         uses: actions/cache@v4
-        id: cache
         with:
           path: |
             openwrt/dl
             openwrt/staging_dir/host
             openwrt/staging_dir/toolchain-*
-          # 关键修正：用配置文件内容哈希作为 key
-          # 只有 feeds.conf.default 或 .config 变动时才重新编译工具链
-          key: openwrt-${{ runner.os }}-${{ hashFiles('feeds.conf.default', '.config') }}
+          key: openwrt-${{ runner.os }}-${{ hashFiles('.config') }}
           restore-keys: |
             openwrt-${{ runner.os }}-
 
@@ -52,14 +45,23 @@ jobs:
 
       - name: 配置编译选项
         run: |
+          cp .config openwrt/.config
           cd openwrt
-          cp $GITHUB_WORKSPACE/.config .config
           make defconfig
+
+      - name: 下载源码包
+        run: |
+          cd openwrt
+          make download -j8 2>&1 | grep -E "ERROR|error" || true
 
       - name: 编译固件
         run: |
           cd openwrt
-          make -j$(nproc) V=s 2>&1 | tee build.log | grep -E "^make|ERROR|WARNING"
+          make -j$(nproc) V=s 2>&1 | tee build.log | grep -E "^make\[1\]|ERROR" || true
+          if grep -q "^make.*Error" build.log; then
+            echo "并行编译失败，尝试单线程..."
+            make -j1 V=s
+          fi
 
       - name: 上传固件
         uses: actions/upload-artifact@v4
