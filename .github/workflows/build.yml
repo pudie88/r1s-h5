@@ -50,7 +50,7 @@ jobs:
       - name: 配置编译选项
         run: |
           cd openwrt
-          cp ../.config .config
+          cp $GITHUB_WORKSPACE/.config .config
           make defconfig
 
       - name: 编译固件
