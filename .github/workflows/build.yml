@@ -1,5 +1,3 @@
-name: Build OpenWrt
-
 name: Build ImmortalWrt R1S H5
 
 on:
@@ -74,6 +72,7 @@ jobs:
           # ===== 关键修改: 设置默认IP =====
           LAN_IP="${{ github.event.inputs.custom_ip || '192.168.10.1' }}"
           echo "设置LAN IP为: $LAN_IP"
+          echo "LAN_IP=$LAN_IP" >> $GITHUB_ENV  # ← 保存到环境变量
           sed -i "s/192.168.1.1/$LAN_IP/g" package/base-files/files/bin/config_generate
           
           # 修改主机名
@@ -86,7 +85,7 @@ jobs:
           mkdir -p files/etc/
           
           # 创建Banner
-          cat > files/etc/banner << 'BANNER'
+          cat > files/etc/banner << EOF
            ____  _  ____    _   _ ____   _   _ ____  
           |  _ \/ ||  _ \  | | | | ___| | | | | ___| 
           | |_) | || |_) | | |_| |___ \ | |_| |___ \ 
@@ -95,13 +94,10 @@ jobs:
           
           -----------------------------------------------------
           ImmortalWrt for NanoPi R1S H5
-          Default IP: CUSTOM_IP
+          Default IP: $LAN_IP
           Username: root | Password: password
           -----------------------------------------------------
-        BANNER
-          
-          # 替换Banner中的IP
-          sed -i "s/CUSTOM_IP/$LAN_IP/g" files/etc/banner
+        EOF
           
           # 创建系统优化配置
           mkdir -p files/etc/sysctl.d
@@ -234,9 +230,7 @@ jobs:
         run: |
           echo "tag=v$(date +'%Y.%m.%d-%H%M')" >> $GITHUB_OUTPUT
           
-          # 获取配置的IP
-          LAN_IP="${{ github.event.inputs.custom_ip || '192.168.10.1' }}"
-          
+          # 使用之前保存的环境变量
           cat > release.txt << RELEASE
         ## ImmortalWrt NanoPi R1S H5 固件
         
@@ -248,16 +242,18 @@ jobs:
         
         ### ✨ 核心特性
         - ✅ BBR TCP拥塞控制
-        - ✅ zRam内存压缩
+        - ✅ zRam内存压缩 (100MB)
         - ✅ 完整USB网卡驱动 (RTL8152/RTL8153)
         - ✅ 中文界面
-        - ✅ 系统性能优化
+        - ✅ CPU性能模式
+        - ✅ 系统参数优化
         
         ### 📋 默认配置
         - **IP地址**: \`$LAN_IP\`
         - **用户名**: \`root\`
         - **密码**: \`password\` (或直接回车)
         - **主机名**: R1S-H5
+        - **时区**: Asia/Shanghai
         
         ### 📝 刷机说明
         1. 下载 \`*-ext4-sdcard.img.gz\` 或 \`*-squashfs-sdcard.img.gz\`
@@ -268,18 +264,47 @@ jobs:
         6. 浏览器访问 \`http://$LAN_IP\`
         
         ### 🔧 常见问题
+        
         **Q: 无法访问管理界面?**
         A: 
         1. 确认网线插在 **LAN口** (靠近TF卡槽)
-        2. 电脑IP设置为 \`${LAN_IP%.*}.100\`
+        2. 电脑IP设置为 \`${LAN_IP%.*}.100\`，网关 \`$LAN_IP\`
         3. ping \`$LAN_IP\` 测试连通性
+        4. 等待完全启动 (首次3-5分钟)
         
         **Q: 忘记了默认IP?**
-        A: 默认IP是 **$LAN_IP**
+        A: 
+        - 默认IP是 **$LAN_IP**
+        - 登录后在 Banner 中也会显示
+        
+        **Q: 想修改IP怎么办?**
+        A: 
+        \`\`\`bash
+        # SSH登录后
+        uci set network.lan.ipaddr='你的新IP'
+        uci commit network
+        /etc/init.d/network restart
+        \`\`\`
+        
+        **Q: 内存够用吗?**
+        A:
+        - 启用了 zRam (100MB压缩交换)
+        - 实际可用内存约 400-450MB
+        - 建议不要同时运行太多服务
+        
+        ### 📊 性能优化
+        
+        已自动应用以下优化:
+        - ✅ TCP BBR 拥塞控制
+        - ✅ zRam 内存压缩 (zstd算法)
+        - ✅ CPU 性能模式 (最大主频)
+        - ✅ 网络参数调优
+        - ✅ 连接跟踪优化 (65536)
         
         ### 🔗 相关链接
         - [ImmortalWrt官网](https://immortalwrt.org/)
         - [R1S H5 Wiki](https://wiki.friendlyelec.com/wiki/index.php/NanoPi_R1S-H5)
+        - [问题反馈](https://github.com/${{ github.repository }}/issues)
         
         ---
         ⭐ 如果好用请点 Star 支持！
