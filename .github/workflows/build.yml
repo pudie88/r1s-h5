@@ -3,10 +3,13 @@ name: Build ImmortalWrt for NanoPi R1S H5
 on:
   push:
     branches: [ main ]
+    paths:
+      - '.config'
+      - '.github/workflows/build.yml'
   workflow_dispatch:
     inputs:
       custom_ip:
-        description: "Custom LAN IP Address"
+        description: "自定义 LAN IP 地址"
         required: false
         default: "192.168.10.1"
 
@@ -23,12 +26,10 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout Repository
+      - name: 检出代码 (Checkout)
         uses: actions/checkout@v4
-        with:
-          path: src
 
-      - name: Free Disk Space
+      - name: 释放磁盘空间 (Free Disk Space)
         uses: jlumbroso/free-disk-space@main
         with:
           tool-cache: true
@@ -38,7 +39,7 @@ jobs:
           large-packages: true
           swap-storage: true
 
-      - name: Install Build Dependencies
+      - name: 安装编译依赖 (Install Dependencies)
         run: |
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
@@ -47,41 +48,44 @@ jobs:
             rsync unzip zlib1g-dev file wget curl device-tree-compiler swig \
             libelf-dev ccache ecj fastjar java-propose-classpath libncursesw5-dev \
             python3-setuptools texinfo xsltproc gperf pkg-config
+          sudo timedatectl set-timezone "$TZ"
 
-      - name: Clone ImmortalWrt Source
+      - name: 克隆源码 (Clone Source)
         run: |
+          df -h
           git clone --depth=1 -b ${{ env.REPO_BRANCH }} ${{ env.REPO_URL }} openwrt
           echo "OPENWRT_PATH=$PWD/openwrt" >> $GITHUB_ENV
 
-      - name: Update and Install Feeds
+      - name: 更新并安装 Feeds
         run: |
-          cd ${{ env.OPENWRT_PATH }}
+          cd openwrt
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Apply Configuration and Custom Files
+      - name: 加载自定义配置与优化 (Load Config & Optimize)
         run: |
-          cd ${{ env.OPENWRT_PATH }}
+          cd openwrt
           
-          # Copy configuration files
-          [ -f "$GITHUB_WORKSPACE/src/.config" ] && cp "$GITHUB_WORKSPACE/src/.config" .config
-          [ -f "$GITHUB_WORKSPACE/src/feeds.conf.default" ] && cp "$GITHUB_WORKSPACE/src/feeds.conf.default" feeds.conf.default
-          
-          # Set LAN IP from input or default
-          if [ -n "${{ github.event.inputs.custom_ip }}" ]; then
-            LAN_IP="${{ github.event.inputs.custom_ip }}"
+          # 1. 复制根目录下的 .config (注意：由于 checkout 没设 path，文件就在 $GITHUB_WORKSPACE)
+          if [ -f "$GITHUB_WORKSPACE/.config" ]; then
+            cp "$GITHUB_WORKSPACE/.config" .config
+            echo "✅ 已加载自定义 .config"
           else
-            LAN_IP="192.168.10.1"
+            echo "❌ 错误: 未在仓库根目录找到 .config 文件" && exit 1
           fi
+
+          # 2. 处理 LAN IP
+          LAN_IP="${{ github.event.inputs.custom_ip }}"
+          [ -z "$LAN_IP" ] && LAN_IP="192.168.10.1"
           echo "LAN_IP=$LAN_IP" >> $GITHUB_ENV
           
-          # 计算客户端IP
+          # 计算客户端静态IP用于提示
           CLIENT_IP=$(echo "$LAN_IP" | awk -F '.' '{print $1"."$2"."$3".100"}')
           echo "CLIENT_IP=$CLIENT_IP" >> $GITHUB_ENV
-          
-          # Create custom network configuration
+
+          # 3. 注入网络配置 (files/etc/config/network)
           mkdir -p files/etc/config
-          cat > files/etc/config/network <<'EOF'
+          cat > files/etc/config/network <<EOF
 config interface 'loopback'
 	option device 'lo'
 	option proto 'static'
@@ -99,7 +103,7 @@ config device
 config interface 'lan'
 	option device 'br-lan'
 	option proto 'static'
-	option ipaddr 'LAN_IP_PLACEHOLDER'
+	option ipaddr '$LAN_IP'
 	option netmask '255.255.255.0'
 	option ip6assign '60'
 
@@ -107,133 +111,72 @@ config interface 'wan'
 	option device 'eth1'
 	option proto 'dhcp'
 EOF
-          # 替换占位符
-          sed -i "s/LAN_IP_PLACEHOLDER/$LAN_IP/g" files/etc/config/network
-          
-          # 更新默认配置
-          if [ -f package/base-files/files/bin/config_generate ]; then
-            sed -i "s/192.168.1.1/$LAN_IP/g" package/base-files/files/bin/config_generate
-            sed -i "s/ImmortalWrt/R1S-H5/g" package/base-files/files/bin/config_generate
-          fi
-          
-          # 添加优化脚本
-          if [ -d "$GITHUB_WORKSPACE/src/scripts" ]; then
-            mkdir -p files/usr/local/bin
-            cp -f "$GITHUB_WORKSPACE/src/scripts/"*.sh files/usr/local/bin/
-            chmod +x files/usr/local/bin/*.sh 2>/dev/null || true
-          fi
-          
-          # 系统优化
+
+          # 4. 系统内核优化 (BBR 等)
           mkdir -p files/etc/sysctl.d
-          cat > files/etc/sysctl.d/99-optimize.conf <<'EOF'
+          cat > files/etc/sysctl.d/99-pudie-optimize.conf <<EOF
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 net.ipv4.tcp_fastopen=3
-net.ipv4.tcp_slow_start_after_idle=0
 net.netfilter.nf_conntrack_max=65536
-vm.swappiness=60
+vm.swappiness=30
 EOF
-          
-          # 生成完整配置
+
+          # 5. 集成仓库内的优化脚本
+          mkdir -p files/usr/bin
+          [ -f "$GITHUB_WORKSPACE/auto-optimize.sh" ] && cp "$GITHUB_WORKSPACE/auto-optimize.sh" files/usr/bin/
+          [ -f "$GITHUB_WORKSPACE/setup-dns.sh" ] && cp "$GITHUB_WORKSPACE/setup-dns.sh" files/usr/bin/
+          chmod +x files/usr/bin/*.sh 2>/dev/null || true
+
+          # 6. 刷新配置
           make defconfig
-          
           echo "BUILD_DATE=$(date +'%Y%m%d-%H%M')" >> $GITHUB_ENV
 
-      - name: Cache Downloaded Packages
-        uses: actions/cache@v4
-        with:
-          path: openwrt/dl
-          key: ${{ runner.os }}-openwrt-dl-${{ hashFiles('**/feeds.conf.default', '**/.config') }}
-          restore-keys: |
-            ${{ runner.os }}-openwrt-dl-
-
-      - name: Download Source Packages
+      - name: 下载源码包 (Download dl)
         run: |
-          cd ${{ env.OPENWRT_PATH }}
-          make -j$(nproc) download || make -j1 download
+          cd openwrt
+          make download -j8
+          find dl -size -1024c -exec ls -l {} \;
+          find dl -size -1024c -exec rm -f {} \;
 
-      - name: Compile Firmware
+      - name: 开始编译 (Compile)
         run: |
-          cd ${{ env.OPENWRT_PATH }}
-          make -j$(nproc) || make -j1 V=s
+          cd openwrt
+          echo -e "$(nproc) thread compile"
+          make -j$(nproc) || make -j1 || make -j1 V=s
+          echo "COMPILE_STATUS=$?" >> $GITHUB_ENV
 
-      - name: Organize Build Artifacts
+      - name: 整理固件文件 (Organize Artifacts)
+        if: success()
         id: organize
         run: |
-          cd ${{ env.OPENWRT_PATH }}/bin/targets/*/*
-          
-          # 创建信息文件
-          cat > BUILD_INFO.txt <<EOF
-Build Date: ${{ env.BUILD_DATE }}
-LAN IP: ${{ env.LAN_IP }}
-Repository: ${{ env.REPO_URL }}
-Branch: ${{ env.REPO_BRANCH }}
-Target: sunxi/cortexa53
-Device: nanopi-r1s-h5
-EOF
-          
-          # 删除包目录以节省空间
+          cd openwrt/bin/targets/sunxi/cortexa53
           rm -rf packages
-          
-          # 设置输出
-          echo "firmware_path=$PWD" >> $GITHUB_OUTPUT
-          echo "firmware_files=$(ls -1 | grep -E '\.(img|bin|gz)$' | tr '\n' ' ')" >> $GITHUB_OUTPUT
+          echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
+          echo "status=success" >> $GITHUB_OUTPUT
 
-      - name: Upload Firmware Artifacts
+      - name: 上传固件到 Artifacts
         uses: actions/upload-artifact@v4
+        if: steps.organize.outputs.status == 'success'
         with:
-          name: ImmortalWrt-R1S-H5-${{ env.BUILD_DATE }}
-          path: ${{ steps.organize.outputs.firmware_path }}/*
+          name: ImmortalWrt_R1S_H5_${{ env.BUILD_DATE }}
+          path: ${{ env.FIRMWARE_PATH }}/*
 
-      - name: Create GitHub Release
+      - name: 发布 GitHub Release
         uses: softprops/action-gh-release@v2
-        if: success()
+        if: steps.organize.outputs.status == 'success'
         with:
           tag_name: v${{ env.BUILD_DATE }}
-          name: ImmortalWrt R1S H5 - ${{ env.BUILD_DATE }}
+          name: R1S-H5 自动编译版 - ${{ env.BUILD_DATE }}
           files: |
-            ${{ steps.organize.outputs.firmware_path }}/*.img
-            ${{ steps.organize.outputs.firmware_path }}/*.bin
-            ${{ steps.organize.outputs.firmware_path }}/BUILD_INFO.txt
+            ${{ env.FIRMWARE_PATH }}/*.img.gz
+            ${{ env.FIRMWARE_PATH }}/*.manifest
           body: |
-            ## NanoPi R1S H5 Firmware
-            
-            **Default LAN IP:** `${{ env.LAN_IP }}`
-            **Username:** `root`
-            **Password:** `password` (default OpenWrt password)
-            
-            ### Included Features
-            - LuCI Web Interface (Chinese + SSL)
-            - TCP BBR Congestion Control
-            - ZRAM Compressed Swap
-            - CAKE SQM QoS
-            - Auto-optimization scripts
-            
-            ### Flashing Instructions
-            1. Use **balenaEtcher** or `dd` command
-            2. Insert SD card to R1S H5
-            3. Connect LAN port (eth0) to your computer
-            4. Set computer IP to `${{ env.CLIENT_IP }}/24`
-            5. Access router at http://${{ env.LAN_IP }}
-            
-            ### Port Orientation
-            - **LAN Port (eth0)**: Closer to power connector
-            - **WAN Port (eth1)**: Closer to USB ports
-            
-            ### Troubleshooting
-            If you cannot access the router:
-            1. Set computer to static IP in same subnet
-            2. Try different LAN ports
-            3. Check serial console output
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Cleanup Old Releases
-        uses: dev-drprasad/delete-older-releases@v0.3.2
-        with:
-          keep_latest: 3
-          delete_tag_pattern: "v*"
+            ## 🚀 NanoPi R1S H5 专用固件
+            - **源码:** ImmortalWrt 23.05
+            - **默认 IP:** `${{ env.LAN_IP }}`
+            - **用户名:** `root` / **密码:** `无` (或 password)
+            - **优化:** 开启 BBR, 集成 USB 网口驱动, 包含自定义脚本。
+            - **刷机建议:** 使用 balenaEtcher 写入 TF 卡。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
