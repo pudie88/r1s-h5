@@ -14,7 +14,6 @@ env:
   REPO_URL: 'https://github.com/immortalwrt/immortalwrt'
   REPO_BRANCH: 'openwrt-23.05'
 
-# 🔑 修复1: 添加写入权限（创建 Release 必需）
 permissions:
   contents: write
 
@@ -52,42 +51,44 @@ jobs:
         run: |
           cd openwrt
 
-          # 1. 写入 .config
-          echo 'CONFIG_TARGET_sunxi=y' >> .config
-          echo 'CONFIG_TARGET_sunxi_cortexa53=y' >> .config
-          echo 'CONFIG_TARGET_sunxi_cortexa53_DEVICE_friendlyarm_nanopi-r1s-h5=y' >> .config
-          echo 'CONFIG_PACKAGE_luci=y' >> .config
-          echo 'CONFIG_PACKAGE_luci-ssl=y' >> .config
-          echo 'CONFIG_PACKAGE_luci-theme-bootstrap=y' >> .config
-          echo 'CONFIG_PACKAGE_curl=y' >> .config
-          echo 'CONFIG_PACKAGE_htop=y' >> .config
-          echo 'CONFIG_PACKAGE_nano=y' >> .config
-          echo 'CONFIG_PACKAGE_tcpdump=y' >> .config
-          echo 'CONFIG_PACKAGE_kmod-usb-net=y' >> .config
-          echo 'CONFIG_PACKAGE_kmod-usb-net-rtl8152=y' >> .config
+          # 1. 写入 .config（纯文本 echo，无任何特殊字符）
+          {
+            echo 'CONFIG_TARGET_sunxi=y'
+            echo 'CONFIG_TARGET_sunxi_cortexa53=y'
+            echo 'CONFIG_TARGET_sunxi_cortexa53_DEVICE_friendlyarm_nanopi-r1s-h5=y'
+            echo 'CONFIG_PACKAGE_luci=y'
+            echo 'CONFIG_PACKAGE_luci-ssl=y'
+            echo 'CONFIG_PACKAGE_luci-theme-bootstrap=y'
+            echo 'CONFIG_PACKAGE_curl=y'
+            echo 'CONFIG_PACKAGE_htop=y'
+            echo 'CONFIG_PACKAGE_nano=y'
+            echo 'CONFIG_PACKAGE_tcpdump=y'
+            echo 'CONFIG_PACKAGE_kmod-usb-net=y'
+            echo 'CONFIG_PACKAGE_kmod-usb-net-rtl8152=y'
+          } >> .config
 
-          # 2. 处理自定义 IP
+          # 2. 安全处理自定义 IP（避免在 YAML 中嵌套复杂表达式）
           LAN_IP="${{ github.event.inputs.custom_ip }}"
           [ -z "$LAN_IP" ] && LAN_IP="192.168.10.1"
           echo "LAN_IP=$LAN_IP" >> $GITHUB_ENV
 
-          # 3. 写入 network 配置（注意：缩进用实际 tab 字符）
+          # 3. 生成 network 配置（核心修复：用 printf 动态生成 Tab，YAML 源文件 0 个 Tab）
           mkdir -p files/etc/config
-          echo "config interface 'loopback'" > files/etc/config/network
-          echo "	option device 'lo'" >> files/etc/config/network
-          echo "	option proto 'static'" >> files/etc/config/network
-          echo "	option ipaddr '127.0.0.1'" >> files/etc/config/network
-          echo "	option netmask '255.0.0.0'" >> files/etc/config/network
-          echo "" >> files/etc/config/network
-          echo "config interface 'lan'" >> files/etc/config/network
-          echo "	option device 'eth0'" >> files/etc/config/network
-          echo "	option proto 'static'" >> files/etc/config/network
-          echo "	option ipaddr '$LAN_IP'" >> files/etc/config/network
-          echo "	option netmask '255.255.255.0'" >> files/etc/config/network
-          echo "" >> files/etc/config/network
-          echo "config interface 'wan'" >> files/etc/config/network
-          echo "	option device 'eth1'" >> files/etc/config/network
-          echo "	option proto 'dhcp'" >> files/etc/config/network
+          {
+            printf "config interface 'loopback'\n"
+            printf "\toption device 'lo'\n"
+            printf "\toption proto 'static'\n"
+            printf "\toption ipaddr '127.0.0.1'\n"
+            printf "\toption netmask '255.0.0.0'\n\n"
+            printf "config interface 'lan'\n"
+            printf "\toption device 'eth0'\n"
+            printf "\toption proto 'static'\n"
+            printf "\toption ipaddr '%s'\n" "$LAN_IP"
+            printf "\toption netmask '255.255.255.0'\n\n"
+            printf "config interface 'wan'\n"
+            printf "\toption device 'eth1'\n"
+            printf "\toption proto 'dhcp'\n"
+          } > files/etc/config/network
 
           # 4. 应用配置
           make defconfig
@@ -103,17 +104,15 @@ jobs:
           cd openwrt
           make -j$(nproc) || make -j1 V=s
 
-      # 🔑 修复2: 使用 outputs 而非 env 传递路径（更可靠）
       - name: '整理文件'
         id: organize
         run: |
           FIRMWARE_DIR="openwrt/bin/targets/sunxi/cortexa53"
           if [ -d "$FIRMWARE_DIR" ]; then
             echo "firmware_path=$FIRMWARE_DIR" >> $GITHUB_OUTPUT
-            echo "✅ 固件目录: $FIRMWARE_DIR"
-            ls -la "$FIRMWARE_DIR"/*.img.gz 2>/dev/null || echo "⚠️ 未找到 .img.gz 文件"
+            echo "✅ 固件目录就绪: $(ls -1 "$FIRMWARE_DIR"/*.img* 2>/dev/null | wc -l) 个文件"
           else
-            echo "❌ 目录不存在: $FIRMWARE_DIR"
+            echo "❌ 错误: 固件目录不存在"
             exit 1
           fi
 
@@ -121,8 +120,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: "ImmortalWrt_R1S_H5_${{ env.BUILD_DATE }}"
-          # 🔑 修复3: 用 steps.xxx.outputs 引用上一步输出
-          path: "${{ steps.organize.outputs.firmware_path }}/*.img.gz"
+          path: "${{ steps.organize.outputs.firmware_path }}/*.img*"
 
       - name: '发布 Release'
         uses: softprops/action-gh-release@v2
@@ -130,8 +128,7 @@ jobs:
         with:
           tag_name: "v${{ env.BUILD_DATE }}"
           name: "R1S-H5 固件 ${{ env.BUILD_DATE }}"
-          # 🔑 修复4: 同样用 steps 引用路径
-          files: "${{ steps.organize.outputs.firmware_path }}/*.img.gz"
+          files: "${{ steps.organize.outputs.firmware_path }}/*.img*"
           body: |
             R1S-H5 专用固件
 
@@ -147,6 +144,5 @@ jobs:
             > 1. 电脑设静态 IP: 192.168.10.100/24
             > 2. 确认网线插在 LAN 口
             > 3. 尝试 ping 192.168.10.1
-        # 🔑 修复5: GITHUB_TOKEN 放在此处（与 action 同级）
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
