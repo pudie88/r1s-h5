@@ -3,14 +3,10 @@ name: Build ImmortalWrt for NanoPi R1S H5
 on:
   push:
     branches: [ main ]
-    paths:
-      - '.config'
-      - '.github/workflows/build.yml'
   workflow_dispatch:
     inputs:
       custom_ip:
-        description: "自定义 LAN IP 地址"
-        required: false
+        description: "自定义 LAN IP"
         default: "192.168.10.1"
 
 env:
@@ -18,71 +14,49 @@ env:
   REPO_URL: https://github.com/immortalwrt/immortalwrt
   REPO_BRANCH: openwrt-23.05
 
-permissions:
-  contents: write
-
 jobs:
   build:
     runs-on: ubuntu-22.04
-
     steps:
-      - name: 检出代码 (Checkout)
+      - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 释放磁盘空间 (Free Disk Space)
+      - name: 释放空间
         uses: jlumbroso/free-disk-space@main
         with:
           tool-cache: true
           android: true
           dotnet: true
-          haskell: true
-          large-packages: true
-          swap-storage: true
 
-      - name: 安装编译依赖 (Install Dependencies)
+      - name: 安装依赖
         run: |
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
-            gettext git libncurses-dev libssl-dev python3-setuptools \
-            rsync unzip zlib1g-dev file wget curl device-tree-compiler swig \
-            libelf-dev ccache ecj fastjar java-propose-classpath libncursesw5-dev \
-            texinfo xsltproc gperf pkg-config
+          sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev python3-setuptools rsync unzip zlib1g-dev file wget curl device-tree-compiler swig libelf-dev ccache ecj fastjar java-propose-classpath libncursesw5-dev texinfo xsltproc gperf pkg-config
           sudo timedatectl set-timezone "$TZ"
 
-      - name: 克隆源码 (Clone Source)
+      - name: 克隆源码
         run: |
           git clone --depth=1 -b ${{ env.REPO_BRANCH }} ${{ env.REPO_URL }} openwrt
-          echo "OPENWRT_PATH=$PWD/openwrt" >> $GITHUB_ENV
 
-      - name: 更新并安装 Feeds
+      - name: 更新 Feeds
         run: |
           cd openwrt
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: 加载自定义配置与优化 (Load Config & Optimize)
+      - name: 自定义配置
         run: |
           cd openwrt
-          
-          # 1. 复制根目录下的 .config (直接从项目根目录读取)
-          if [ -f "$GITHUB_WORKSPACE/.config" ]; then
-            cp "$GITHUB_WORKSPACE/.config" .config
-            echo "✅ 已成功加载自定义 .config"
-          else
-            echo "❌ 错误: 未在仓库根目录找到 .config 文件" && exit 1
+          # 确保 .config 存在
+          if [ -f "../.config" ]; then
+            cp "../.config" .config
           fi
-
-          # 2. 处理 LAN IP
+          
+          # 设置 IP
           LAN_IP="${{ github.event.inputs.custom_ip }}"
           [ -z "$LAN_IP" ] && LAN_IP="192.168.10.1"
-          echo "LAN_IP=$LAN_IP" >> $GITHUB_ENV
           
-          # 计算用于提示的客户端IP
-          CLIENT_IP=$(echo "$LAN_IP" | awk -F '.' '{print $1"."$2"."$3".100"}')
-          echo "CLIENT_IP=$CLIENT_IP" >> $GITHUB_ENV
-
-          # 3. 注入网络配置到 files 目录 (最高优先级)
+          # 写入网络配置
           mkdir -p files/etc/config
           cat > files/etc/config/network <<EOF
 config interface 'loopback'
@@ -91,83 +65,49 @@ config interface 'loopback'
 	option ipaddr '127.0.0.1'
 	option netmask '255.0.0.0'
 
-config globals 'globals'
-	option ula_prefix 'auto'
-
-config device
-	option name 'br-lan'
-	option type 'bridge'
-	list ports 'eth0'
-
 config interface 'lan'
-	option device 'br-lan'
+	option device 'eth0'
 	option proto 'static'
 	option ipaddr '$LAN_IP'
 	option netmask '255.255.255.0'
-	option ip6assign '60'
 
 config interface 'wan'
 	option device 'eth1'
 	option proto 'dhcp'
 EOF
-
-          # 4. 注入内核优化 (BBR)
-          mkdir -p files/etc/sysctl.d
-          cat > files/etc/sysctl.d/99-custom.conf <<EOF
-net.core.default_qdisc=fq
-net.ipv4.tcp_congestion_control=bbr
-net.ipv4.tcp_fastopen=3
-net.netfilter.nf_conntrack_max=65536
-vm.swappiness=30
-EOF
-
-          # 5. 系统名称自定义
-          sed -i "s/ImmortalWrt/R1S-H5-AI/g" package/base-files/files/bin/config_generate
-
-          # 6. 生成最终配置
           make defconfig
           echo "BUILD_DATE=$(date +'%Y%m%d-%H%M')" >> $GITHUB_ENV
 
-      - name: 下载源码包 (Download dl)
+      - name: 下载源码包
         run: |
           cd openwrt
           make download -j8
-          find dl -size -1024c -exec ls -l {} \;
-          find dl -size -1024c -exec rm -f {} \;
 
-      - name: 开始编译 (Compile)
+      - name: 编译固件
         run: |
           cd openwrt
-          echo "使用 $(nproc) 线程编译..."
-          make -j$(nproc) || make -j1 || make -j1 V=s
+          make -j$(nproc) || make -j1 V=s
 
-      - name: 整理固件 (Organize Artifacts)
-        if: always()
+      - name: 整理文件
         run: |
-          cd openwrt/bin/targets/sunxi/cortexa53 || exit 0
-          rm -rf packages
+          cd openwrt/bin/targets/sunxi/cortexa53
           echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
 
-      - name: 上传固件到 Artifacts
+      - name: 上传固件
         uses: actions/upload-artifact@v4
         with:
           name: ImmortalWrt_R1S_H5_${{ env.BUILD_DATE }}
-          path: ${{ env.FIRMWARE_PATH }}/*
+          path: ${{ env.FIRMWARE_PATH }}/*.img.gz
 
       - name: 发布 Release
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/heads/main')
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         with:
           tag_name: v${{ env.BUILD_DATE }}
-          name: R1S-H5 固件 - ${{ env.BUILD_DATE }}
-          files: |
-            ${{ env.FIRMWARE_PATH }}/*.img.gz
-            ${{ env.FIRMWARE_PATH }}/*.manifest
+          name: R1S-H5 固件 ${{ env.BUILD_DATE }}
+          files: ${{ env.FIRMWARE_PATH }}/*.img.gz
           body: |
-            ## 🛠 NanoPi R1S H5 专用固件
-            - **默认 IP:** `${{ env.LAN_IP }}`
-            - **管理地址:** `http://${{ env.LAN_IP }}`
-            - **优化:** 默认开启 BBR, 集成 USB 网口驱动 (RTL8152/8153)。
-            - **提示:** 首次登录如需密码，请尝试 `password` 或直接回车。
+            R1S-H5 专用固件
+            默认 IP: ${{ github.event.inputs.custom_ip || '192.168.10.1' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
