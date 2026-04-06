@@ -48,44 +48,44 @@ jobs:
         run: |
           cd openwrt
 
-          # 设置目标设备为 NanoPi R1S H5
-          cat >> .config <<'EOF'
-          CONFIG_TARGET_sunxi=y
-          CONFIG_TARGET_sunxi_cortexa53=y
-          CONFIG_TARGET_sunxi_cortexa53_DEVICE_friendlyarm_nanopi-r1s-h5=y
-          CONFIG_PACKAGE_luci=y
-          CONFIG_PACKAGE_luci-ssl=y
-          CONFIG_PACKAGE_luci-theme-bootstrap=y
-          CONFIG_PACKAGE_curl=y
-          CONFIG_PACKAGE_htop=y
-          CONFIG_PACKAGE_nano=y
-          CONFIG_PACKAGE_tcpdump=y
-          EOF
+          # 1. 写入 .config（用 echo 避免 heredoc 缩进问题）
+          echo 'CONFIG_TARGET_sunxi=y' >> .config
+          echo 'CONFIG_TARGET_sunxi_cortexa53=y' >> .config
+          echo 'CONFIG_TARGET_sunxi_cortexa53_DEVICE_friendlyarm_nanopi-r1s-h5=y' >> .config
+          echo 'CONFIG_PACKAGE_luci=y' >> .config
+          echo 'CONFIG_PACKAGE_luci-ssl=y' >> .config
+          echo 'CONFIG_PACKAGE_luci-theme-bootstrap=y' >> .config
+          echo 'CONFIG_PACKAGE_curl=y' >> .config
+          echo 'CONFIG_PACKAGE_htop=y' >> .config
+          echo 'CONFIG_PACKAGE_nano=y' >> .config
+          echo 'CONFIG_PACKAGE_tcpdump=y' >> .config
+          echo 'CONFIG_PACKAGE_kmod-usb-net=y' >> .config
+          echo 'CONFIG_PACKAGE_kmod-usb-net-rtl8152=y' >> .config
 
-          # 设置 LAN IP
+          # 2. 处理自定义 IP
           LAN_IP="${{ github.event.inputs.custom_ip }}"
           [ -z "$LAN_IP" ] && LAN_IP="192.168.10.1"
+          echo "LAN_IP=$LAN_IP" >> $GITHUB_ENV
 
-          # 写入网络配置
+          # 3. 写入 network 配置（用 echo + 转义，避免缩进/引号冲突）
           mkdir -p files/etc/config
-          cat > files/etc/config/network <<'EOF'
-          config interface 'loopback'
-                  option device 'lo'
-                  option proto 'static'
-                  option ipaddr '127.0.0.1'
-                  option netmask '255.0.0.0'
+          echo "config interface 'loopback'" > files/etc/config/network
+          echo "	option device 'lo'" >> files/etc/config/network
+          echo "	option proto 'static'" >> files/etc/config/network
+          echo "	option ipaddr '127.0.0.1'" >> files/etc/config/network
+          echo "	option netmask '255.0.0.0'" >> files/etc/config/network
+          echo "" >> files/etc/config/network
+          echo "config interface 'lan'" >> files/etc/config/network
+          echo "	option device 'eth0'" >> files/etc/config/network
+          echo "	option proto 'static'" >> files/etc/config/network
+          echo "	option ipaddr '$LAN_IP'" >> files/etc/config/network
+          echo "	option netmask '255.255.255.0'" >> files/etc/config/network
+          echo "" >> files/etc/config/network
+          echo "config interface 'wan'" >> files/etc/config/network
+          echo "	option device 'eth1'" >> files/etc/config/network
+          echo "	option proto 'dhcp'" >> files/etc/config/network
 
-          config interface 'lan'
-                  option device 'eth0'
-                  option proto 'static'
-                  option ipaddr '$LAN_IP'
-                  option netmask '255.255.255.0'
-
-          config interface 'wan'
-                  option device 'eth1'
-                  option proto 'dhcp'
-          EOF
-
+          # 4. 应用配置
           make defconfig
           echo "BUILD_DATE=$(date +'%Y%m%d-%H%M')" >> $GITHUB_ENV
 
@@ -107,18 +107,25 @@ jobs:
       - name: '上传固件'
         uses: actions/upload-artifact@v4
         with:
-          name: 'ImmortalWrt_R1S_H5_${{ env.BUILD_DATE }}'
-          path: '${{ env.FIRMWARE_PATH }}/*.img.gz'
+          name: "ImmortalWrt_R1S_H5_${{ env.BUILD_DATE }}"
+          path: "${{ env.FIRMWARE_PATH }}/*.img.gz"
 
       - name: '发布 Release'
         uses: softprops/action-gh-release@v2
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         with:
-          tag_name: 'v${{ env.BUILD_DATE }}'
-          name: 'R1S-H5 固件 ${{ env.BUILD_DATE }}'
-          files: '${{ env.FIRMWARE_PATH }}/*.img.gz'
+          tag_name: "v${{ env.BUILD_DATE }}"
+          name: "R1S-H5 固件 ${{ env.BUILD_DATE }}"
+          files: "${{ env.FIRMWARE_PATH }}/*.img.gz"
           body: |
             R1S-H5 专用固件
-            默认 IP: ${{ github.event.inputs.custom_ip || '192.168.10.1' }}
+
+            **默认 IP**: `${{ env.LAN_IP }}`
+            **用户名**: `root`
+            **密码**: `password`
+
+            > 💡 接口说明：
+            > - LAN 口 (eth0): 靠近电源接口
+            > - WAN 口 (eth1): 靠近 USB 接口
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
