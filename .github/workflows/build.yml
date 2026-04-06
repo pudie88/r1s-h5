@@ -14,6 +14,10 @@ env:
   REPO_URL: 'https://github.com/immortalwrt/immortalwrt'
   REPO_BRANCH: 'openwrt-23.05'
 
+# 🔑 修复1: 添加写入权限（创建 Release 必需）
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: 'ubuntu-22.04'
@@ -48,7 +52,7 @@ jobs:
         run: |
           cd openwrt
 
-          # 1. 写入 .config（用 echo 避免 heredoc 缩进问题）
+          # 1. 写入 .config
           echo 'CONFIG_TARGET_sunxi=y' >> .config
           echo 'CONFIG_TARGET_sunxi_cortexa53=y' >> .config
           echo 'CONFIG_TARGET_sunxi_cortexa53_DEVICE_friendlyarm_nanopi-r1s-h5=y' >> .config
@@ -67,7 +71,7 @@ jobs:
           [ -z "$LAN_IP" ] && LAN_IP="192.168.10.1"
           echo "LAN_IP=$LAN_IP" >> $GITHUB_ENV
 
-          # 3. 写入 network 配置（用 echo + 转义，避免缩进/引号冲突）
+          # 3. 写入 network 配置（注意：缩进用实际 tab 字符）
           mkdir -p files/etc/config
           echo "config interface 'loopback'" > files/etc/config/network
           echo "	option device 'lo'" >> files/etc/config/network
@@ -99,16 +103,26 @@ jobs:
           cd openwrt
           make -j$(nproc) || make -j1 V=s
 
+      # 🔑 修复2: 使用 outputs 而非 env 传递路径（更可靠）
       - name: '整理文件'
+        id: organize
         run: |
-          cd openwrt/bin/targets/sunxi/cortexa53
-          echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
+          FIRMWARE_DIR="openwrt/bin/targets/sunxi/cortexa53"
+          if [ -d "$FIRMWARE_DIR" ]; then
+            echo "firmware_path=$FIRMWARE_DIR" >> $GITHUB_OUTPUT
+            echo "✅ 固件目录: $FIRMWARE_DIR"
+            ls -la "$FIRMWARE_DIR"/*.img.gz 2>/dev/null || echo "⚠️ 未找到 .img.gz 文件"
+          else
+            echo "❌ 目录不存在: $FIRMWARE_DIR"
+            exit 1
+          fi
 
       - name: '上传固件'
         uses: actions/upload-artifact@v4
         with:
           name: "ImmortalWrt_R1S_H5_${{ env.BUILD_DATE }}"
-          path: "${{ env.FIRMWARE_PATH }}/*.img.gz"
+          # 🔑 修复3: 用 steps.xxx.outputs 引用上一步输出
+          path: "${{ steps.organize.outputs.firmware_path }}/*.img.gz"
 
       - name: '发布 Release'
         uses: softprops/action-gh-release@v2
@@ -116,7 +130,8 @@ jobs:
         with:
           tag_name: "v${{ env.BUILD_DATE }}"
           name: "R1S-H5 固件 ${{ env.BUILD_DATE }}"
-          files: "${{ env.FIRMWARE_PATH }}/*.img.gz"
+          # 🔑 修复4: 同样用 steps 引用路径
+          files: "${{ steps.organize.outputs.firmware_path }}/*.img.gz"
           body: |
             R1S-H5 专用固件
 
@@ -125,7 +140,13 @@ jobs:
             **密码**: `password`
 
             > 💡 接口说明：
-            > - LAN 口 (eth0): 靠近电源接口
-            > - WAN 口 (eth1): 靠近 USB 接口
+            > - LAN 口 (eth0): 靠近电源接口 🔌
+            > - WAN 口 (eth1): 靠近 USB 接口 🌐
+
+            > ⚠️ 首次启动若无法访问：
+            > 1. 电脑设静态 IP: 192.168.10.100/24
+            > 2. 确认网线插在 LAN 口
+            > 3. 尝试 ping 192.168.10.1
+        # 🔑 修复5: GITHUB_TOKEN 放在此处（与 action 同级）
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
