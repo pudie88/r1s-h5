@@ -1,0 +1,13 @@
+# ImmortalWrt 官方源
+src-git immortalwrt https://github.com/immortalwrt/immortalwrt.git;openwrt-23.05
+src-git packages https://github.com/immortalwrt/packages.git;openwrt-23.05
+src-git routing https://github.com/immortalwrt/routing.git;openwrt-23.05
+src-git telephony https://github.com/immortalwrt/telephony.git;openwrt-23.05
+
+# 第三方插件源（按需启用）
+# src-git kenzo https://github.com/kenzok8/openwrt-packages
+# src-git small https://github.com/kenzok8/small
+# src-git passwall https://github.com/xiaorouji/openwrt-passwall-packages
+
+# 禁用默认 OpenWrt 源避免冲突
+# src-git openwrt https://github.com/openwrt/openwrt.git;openwrt-23.05
