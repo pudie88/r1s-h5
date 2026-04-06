@@ -51,28 +51,42 @@ jobs:
         run: |
           cd openwrt
 
-          # 1. 写入 .config（纯文本 echo，无任何特殊字符）
+          # 写入最小可用配置（避免包冲突）
           {
             echo 'CONFIG_TARGET_sunxi=y'
             echo 'CONFIG_TARGET_sunxi_cortexa53=y'
             echo 'CONFIG_TARGET_sunxi_cortexa53_DEVICE_friendlyarm_nanopi-r1s-h5=y'
+            echo 'CONFIG_PACKAGE_base-files=y'
+            echo 'CONFIG_PACKAGE_busybox=y'
+            echo 'CONFIG_PACKAGE_opkg=y'
+            echo 'CONFIG_PACKAGE_dropbear=y'
+            echo 'CONFIG_PACKAGE_dnsmasq-full=y'
+            echo 'CONFIG_PACKAGE_firewall4=y'
+            echo 'CONFIG_PACKAGE_netifd=y'
+            echo 'CONFIG_PACKAGE_ubus=y'
+            echo 'CONFIG_PACKAGE_uci=y'
+            echo 'CONFIG_PACKAGE_kmod-usb-net=y'
+            echo 'CONFIG_PACKAGE_kmod-usb-net-rtl8152=y'
+            echo 'CONFIG_PACKAGE_kmod-usb-core=y'
+            echo 'CONFIG_PACKAGE_kmod-usb2=y'
             echo 'CONFIG_PACKAGE_luci=y'
+            echo 'CONFIG_PACKAGE_luci-base=y'
             echo 'CONFIG_PACKAGE_luci-ssl=y'
             echo 'CONFIG_PACKAGE_luci-theme-bootstrap=y'
+            echo 'CONFIG_LUCI_LANG_zh_Hans=y'
             echo 'CONFIG_PACKAGE_curl=y'
             echo 'CONFIG_PACKAGE_htop=y'
             echo 'CONFIG_PACKAGE_nano=y'
             echo 'CONFIG_PACKAGE_tcpdump=y'
-            echo 'CONFIG_PACKAGE_kmod-usb-net=y'
-            echo 'CONFIG_PACKAGE_kmod-usb-net-rtl8152=y'
+            echo 'CONFIG_PACKAGE_wget-ssl=y'
           } >> .config
 
-          # 2. 安全处理自定义 IP（避免在 YAML 中嵌套复杂表达式）
+          # 安全处理自定义 IP
           LAN_IP="${{ github.event.inputs.custom_ip }}"
           [ -z "$LAN_IP" ] && LAN_IP="192.168.10.1"
           echo "LAN_IP=$LAN_IP" >> $GITHUB_ENV
 
-          # 3. 生成 network 配置（核心修复：用 printf 动态生成 Tab，YAML 源文件 0 个 Tab）
+          # 生成 network 配置（用 printf 动态生成 Tab，避免 YAML 源文件含制表符）
           mkdir -p files/etc/config
           {
             printf "config interface 'loopback'\n"
@@ -90,7 +104,7 @@ jobs:
             printf "\toption proto 'dhcp'\n"
           } > files/etc/config/network
 
-          # 4. 应用配置
+          # 自动补全依赖
           make defconfig
           echo "BUILD_DATE=$(date +'%Y%m%d-%H%M')" >> $GITHUB_ENV
 
@@ -102,7 +116,12 @@ jobs:
       - name: '编译固件'
         run: |
           cd openwrt
-          make -j$(nproc) || make -j1 V=s
+          make -j1 V=s 2>&1 | tee build.log
+          if [ ${PIPESTATUS[0]} -ne 0 ]; then
+            echo "❌ 编译失败，关键错误:"
+            grep -B5 -A5 -iE "error:|failed" build.log | tail -30
+            exit 1
+          fi
 
       - name: '整理文件'
         id: organize
@@ -110,9 +129,9 @@ jobs:
           FIRMWARE_DIR="openwrt/bin/targets/sunxi/cortexa53"
           if [ -d "$FIRMWARE_DIR" ]; then
             echo "firmware_path=$FIRMWARE_DIR" >> $GITHUB_OUTPUT
-            echo "✅ 固件目录就绪: $(ls -1 "$FIRMWARE_DIR"/*.img* 2>/dev/null | wc -l) 个文件"
+            echo "✅ 固件目录: $(ls -1 "$FIRMWARE_DIR"/*.img* 2>/dev/null | wc -l) 个文件"
           else
-            echo "❌ 错误: 固件目录不存在"
+            echo "❌ 固件目录不存在"
             exit 1
           fi
 
@@ -139,10 +158,5 @@ jobs:
             > 💡 接口说明：
             > - LAN 口 (eth0): 靠近电源接口 🔌
             > - WAN 口 (eth1): 靠近 USB 接口 🌐
-
-            > ⚠️ 首次启动若无法访问：
-            > 1. 电脑设静态 IP: 192.168.10.100/24
-            > 2. 确认网线插在 LAN 口
-            > 3. 尝试 ping 192.168.10.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
