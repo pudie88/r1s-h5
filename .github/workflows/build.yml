@@ -32,12 +32,8 @@ permissions:
 
 jobs:
   build:
-    name: Build R1S-H5 (${{ matrix.arch }})
+    name: Build R1S-H5
     runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [cortexa53]
     
     steps:
       - name: Checkout Repository
@@ -88,12 +84,13 @@ jobs:
           # 复制 feeds 配置
           [ -f $GITHUB_WORKSPACE/$FEEDS_FILE ] && cp $GITHUB_WORKSPACE/$FEEDS_FILE feeds.conf.default
           
-          # 复制优化脚本到 files 目录（刷入后自动安装）
+          # 复制优化脚本到 files 目录
           mkdir -p files/usr/local/bin
-          cp -f $GITHUB_WORKSPACE/scripts/*.sh files/usr/local/bin/
+          cp -f $GITHUB_WORKSPACE/scripts/*.sh files/usr/local/bin/ 2>/dev/null || true
           chmod +x files/usr/local/bin/*.sh 2>/dev/null || true
           
           # 修复网络配置 - 关键！解决 LAN/WAN 对调问题
+          mkdir -p files/etc/config
           cat > files/etc/config/network << 'NETEOF'
 config interface 'loopback'
 	option device 'lo'
@@ -107,7 +104,7 @@ config globals 'globals'
 config interface 'lan'
 	option device 'eth0'
 	option proto 'static'
-	option ipaddr '${{ github.event.inputs.custom_ip || '192.168.10.1' }}'
+	option ipaddr '192.168.10.1'
 	option netmask '255.255.255.0'
 	option ip6assign '60'
 	option dns '119.29.29.29 223.5.5.5'
@@ -117,27 +114,21 @@ config interface 'wan'
 	option proto 'dhcp'
 	option peerdns '0'
 	option dns '119.29.29.29 223.5.5.5'
-
-config switch
-	option name 'switch0'
-	option reset '1'
-	option enable_vlan '1'
-
-config switch_vlan
-	option device 'switch0'
-	option vlan '1'
-	option ports '0 1 2 3 4 5t'
 NETEOF
 
           # 写入自定义主机名
           echo "R1S-H5" > files/etc/hostname
-          sed -i "s/192.168.1.1/${{ github.event.inputs.custom_ip || '192.168.10.1' }}/g" package/base-files/files/bin/config_generate
+          
+          # 修改默认 IP (使用 shell 变量，避免 YAML 解析问题)
+          LAN_IP="${{ github.event.inputs.custom_ip }}"
+          [ -z "$LAN_IP" ] && LAN_IP="192.168.10.1"
+          sed -i "s/192.168.10.1/$LAN_IP/g" files/etc/config/network
+          sed -i "s/192.168.1.1/$LAN_IP/g" package/base-files/files/bin/config_generate
           sed -i "s/ImmortalWrt/R1S-H5/g" package/base-files/files/bin/config_generate
 
           # 系统内核优化参数
           mkdir -p files/etc/sysctl.d
           cat > files/etc/sysctl.d/99-r1s-optimize.conf << 'SYSEOF'
-# 网络优化
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 net.ipv4.tcp_fastopen=3
@@ -146,16 +137,14 @@ net.ipv4.tcp_tw_reuse=1
 net.ipv4.tcp_fin_timeout=30
 net.netfilter.nf_conntrack_max=65536
 net.netfilter.nf_conntrack_tcp_timeout_established=1200
-# 内存优化
 vm.swappiness=10
 vm.vfs_cache_pressure=150
-# 文件句柄
 fs.file-max=65535
 fs.inotify.max_user_watches=524288
 SYSEOF
 
           # 启用自动优化脚本（开机执行）
-          mkdir -p files/etc/rc.d
+          mkdir -p files/etc/init.d
           cat > files/etc/init.d/auto-optimize << 'INITEOF'
 #!/bin/sh /etc/rc.common
 START=99
@@ -200,17 +189,11 @@ INITEOF
         run: |
           cd $OPENWRT_PATH/bin/targets/*/*
           mkdir -p release
-          
-          # 复制主要固件文件
           cp -f *ext4*.img* release/ 2>/dev/null || true
           cp -f *squashfs*.img* release/ 2>/dev/null || true
           cp -f *.itb release/ 2>/dev/null || true
-          
-          # 生成校验和
           cd release
           sha256sum * > sha256sums.txt
-          
-          # 设置输出变量
           echo "firmware_path=$PWD" >> $GITHUB_OUTPUT
           echo "version=${{ env.VERSION_INFO }}" >> $GITHUB_OUTPUT
 
@@ -225,59 +208,58 @@ INITEOF
         uses: softprops/action-gh-release@v2
         with:
           tag_name: R1S-H5-${{ steps.prepare.outputs.version }}
-          name: "🚀 ImmortalWrt for NanoPi R1S H5 - ${{ steps.prepare.outputs.version }}"
+          name: "ImmortalWrt for NanoPi R1S H5 - ${{ steps.prepare.outputs.version }}"
           files: ${{ steps.prepare.outputs.firmware_path }}/*
           body: |
-            ## 📦 固件信息
+            ## Firmware Info
             
-            | 项目 | 详情 |
-            |------|------|
-            | 设备 | NanoPi R1S H5 |
-            | 平台 | sunxi/cortexa53 |
-            | 源码 | ImmortalWrt ${{ env.REPO_BRANCH }} |
-            | 编译时间 | ${{ env.TZ }} |
-            | 版本 | ${{ steps.prepare.outputs.version }} |
+            | Item | Value |
+            |------|-------|
+            | Device | NanoPi R1S H5 |
+            | Platform | sunxi/cortexa53 |
+            | Source | ImmortalWrt ${{ env.REPO_BRANCH }} |
+            | Build Time | ${{ env.TZ }} |
+            | Version | ${{ steps.prepare.outputs.version }} |
             
-            ## 🔧 默认配置
+            ## Default Config
             
-            - **默认 IP**: `${{ github.event.inputs.custom_ip || '192.168.10.1' }}`
-            - **用户名**: `root`
-            - **密码**: `password`
-            - **LAN 口**: 靠近电源接口 (eth0) 🔌
-            - **WAN 口**: 靠近 USB 接口 (eth1) 🌐
+            - **LAN IP**: `${{ github.event.inputs.custom_ip || '192.168.10.1' }}`
+            - **Username**: `root`
+            - **Password**: `password`
+            - **LAN Port**: eth0 (near power jack)
+            - **WAN Port**: eth1 (near USB port)
             
-            ## ✨ 预装功能
+            ## Features
             
-            - [x] LuCI 中文界面 + SSL 支持
-            - [x] TCP BBR 拥塞控制
-            - [x] ZRAM 压缩交换（${{ github.event.inputs.enable_zram == 'true' && '启用' || '禁用' }}）
-            - [x] 网络加速: CAKE SQM + Flow Offloading
-            - [x] 系统工具: htop, curl, wget, nano, ethtool
-            - [x] 自动优化脚本（开机执行）
+            - LuCI Chinese interface + SSL
+            - TCP BBR congestion control
+            - ZRAM compressed swap
+            - CAKE SQM + Flow Offloading
+            - Tools: htop, curl, wget, nano, ethtool
+            - Auto-optimize scripts (run at boot)
             
-            ## 📥 刷写说明
+            ## Flash Instructions
             
             ```bash
-            # 推荐使用 balenaEtcher 或 dd 命令
-            # 警告: 操作前请备份重要数据!
+            # Use balenaEtcher or dd command
+            # WARNING: Backup your data first!
             
-            # Linux/macOS 示例:
+            # Linux/macOS example:
             sudo dd if=ImmortalWrt-*-squashfs-sdcard.img.gz of=/dev/sdX bs=1M status=progress conv=fsync
             ```
             
-            ## 🔍 故障排查
+            ## Troubleshooting
             
-            > 如果刷入后无法访问：
-            > 1. 确认网线连接正确（LAN 口 = eth0）
-            > 2. 电脑设置静态 IP: 192.168.10.x/24
-            > 3. 尝试 ping 192.168.10.1
-            > 4. 如仍失败，通过串口调试（115200 8N1）
+            > If you cannot access after flashing:
+            > 1. Check cable is in LAN port (eth0)
+            > 2. Set PC static IP: 192.168.10.x/24
+            > 3. Try ping 192.168.10.1
+            > 4. Use serial console (115200 8N1) if needed
             
-            ## 📚 参考资源
+            ## Resources
             
-            - [恩山论坛 R1S H5 专区](https://www.right.com.cn/forum/forum-243-1.html)
-            - [ImmortalWrt 文档](https://immortalwrt.org/)
-            - [本固件源码](https://github.com/${{ github.repository }})
+            - [Enshan Forum R1S H5](https://www.right.com.cn/forum/forum-243-1.html)
+            - [ImmortalWrt Docs](https://immortalwrt.org/)
           draft: false
           prerelease: false
 
