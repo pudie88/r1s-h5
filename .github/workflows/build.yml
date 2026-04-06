@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       custom_ip:
-        description: "Custom LAN IP Address (e.g., 192.168.10.1)"
+        description: "Custom LAN IP Address"
         required: false
         default: "192.168.10.1"
 
@@ -62,14 +62,12 @@ jobs:
           ./scripts/feeds install -a
 
       - name: Apply Configuration and Custom Files
-        id: config
         run: |
           cd ${{ env.OPENWRT_PATH }}
           
           # Copy configuration files
           [ -f "$GITHUB_WORKSPACE/src/.config" ] && cp "$GITHUB_WORKSPACE/src/.config" .config
-          [ -f "$GITHUB_WORKSPACE/src/feeds.conf.default" ] && \
-            cp "$GITHUB_WORKSPACE/src/feeds.conf.default" feeds.conf.default
+          [ -f "$GITHUB_WORKSPACE/src/feeds.conf.default" ] && cp "$GITHUB_WORKSPACE/src/feeds.conf.default" feeds.conf.default
           
           # Set LAN IP from input or default
           if [ -n "${{ github.event.inputs.custom_ip }}" ]; then
@@ -79,9 +77,13 @@ jobs:
           fi
           echo "LAN_IP=$LAN_IP" >> $GITHUB_ENV
           
-          # Create custom network configuration
+          # 计算客户端IP（用于故障排除说明）
+          CLIENT_IP=$(echo "$LAN_IP" | awk -F '.' '{print $1"."$2"."$3".100"}')
+          echo "CLIENT_IP=$CLIENT_IP" >> $GITHUB_ENV
+          
+          # Create custom network configuration with placeholder
           mkdir -p files/etc/config
-          cat > files/etc/config/network <<EOF
+          cat > files/etc/config/network <<'EOF'
 config interface 'loopback'
 	option device 'lo'
 	option proto 'static'
@@ -99,7 +101,7 @@ config device
 config interface 'lan'
 	option device 'br-lan'
 	option proto 'static'
-	option ipaddr '$LAN_IP'
+	option ipaddr 'LAN_IP_PLACEHOLDER'
 	option netmask '255.255.255.0'
 	option ip6assign '60'
 
@@ -107,11 +109,12 @@ config interface 'wan'
 	option device 'eth1'
 	option proto 'dhcp'
 EOF
+          # 替换占位符为实际IP
+          sed -i "s/LAN_IP_PLACEHOLDER/$LAN_IP/g" files/etc/config/network
           
           # Also update the default config_generate
           if [ -f package/base-files/files/bin/config_generate ]; then
             sed -i "s/192.168.1.1/$LAN_IP/g" package/base-files/files/bin/config_generate
-            sed -i "s/192.168.\\{1,3\\}\.\\{1,3\\}\.\\{1,3\\}\.1/$LAN_IP/g" package/base-files/files/bin/config_generate
             sed -i "s/ImmortalWrt/R1S-H5/g" package/base-files/files/bin/config_generate
           fi
           
@@ -124,14 +127,14 @@ EOF
           
           # System optimization
           mkdir -p files/etc/sysctl.d
-          cat > files/etc/sysctl.d/99-optimize.conf <<'SYSEOF'
+          cat > files/etc/sysctl.d/99-optimize.conf <<'EOF'
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 net.ipv4.tcp_fastopen=3
 net.ipv4.tcp_slow_start_after_idle=0
 net.netfilter.nf_conntrack_max=65536
 vm.swappiness=60
-SYSEOF
+EOF
           
           # Generate full config
           make defconfig
@@ -188,8 +191,8 @@ EOF
         uses: softprops/action-gh-release@v2
         if: success()
         with:
-          tag_name: "v${{ env.BUILD_DATE }}"
-          name: "ImmortalWrt R1S H5 - ${{ env.BUILD_DATE }}"
+          tag_name: v${{ env.BUILD_DATE }}
+          name: ImmortalWrt R1S H5 - ${{ env.BUILD_DATE }}
           files: |
             ${{ steps.organize.outputs.firmware_path }}/*.img
             ${{ steps.organize.outputs.firmware_path }}/*.bin
@@ -212,7 +215,7 @@ EOF
             1. Use **balenaEtcher** or `dd` command
             2. Insert SD card to R1S H5
             3. Connect LAN port (eth0) to your computer
-            4. Set computer IP to `${{ env.LAN_IP | replace('1', '100') }}/24`
+            4. Set computer IP to `${{ env.CLIENT_IP }}/24`
             5. Access router at http://${{ env.LAN_IP }}
             
             ### Port Orientation
